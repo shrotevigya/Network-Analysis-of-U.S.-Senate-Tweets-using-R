@@ -1,0 +1,511 @@
+---
+title: "Assignment 3: U.S. Senators on Twitter"
+author: Vigya Shrote
+date: 2017-04-16
+always_allow_html: yes
+output: 
+  html_document:
+    keep_md: true
+---
+
+Network Analysis of U.S. Senate Tweets
+================================
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(readxl)
+library(tidyverse)
+library(plotly)
+library(ggthemes)
+library(gridExtra)
+library(manipulateWidget)
+library(ggplot2)
+library(knitr)
+library(DT)
+library(maps)
+library(dplyr)
+library(RColorBrewer)
+library(plyr)
+library(fossil)
+library(geosphere)
+library(tm)       
+library(quanteda) 
+library(tidytext)
+library(stringr)
+library(SnowballC)
+library(wordcloud)
+library(stringi) 
+library(tidytext)
+library(plotrix)
+library(igraph)        
+library(ggnetwork)    
+library(intergraph)    
+library(ggrepel)       
+library(svgPanZoom)    
+library(ggraph)
+library(igraph)
+library(kableExtra)
+library(networkD3)
+library(sqldf)
+library(splitstackshape)
+
+
+opts_chunk$set(fig.path="images/",
+               cache.path="cache/",
+               cache=FALSE,
+               echo=FALSE,
+               message=FALSE,
+               warning=FALSE) 
+
+```
+
+
+## Overview
+
+Twitter is a great tool to analyze the public interactions of political actors. For this assignment, I want you to use the information about who follows whom on Twitter as well as past tweets of the current U.S. Senate members to analyze how they interact and what they tweet about. 
+
+## Data
+
+#### Twitter Handles of Senators
+
+Twitter does not allow us to search for past tweets based on keywords, location, or topics (hashtags). However, we are able to obtain the past tweets of users if we specify their Twitter handle. The file `senators_twitter.csv` contains the Twitter handles of the current U.S. Senate members (obtained from [SocialSeer](https://www.socialseer.com/resources/us-senator-twitter-accounts/)). We will focus on the Senators' _official Twitter accounts_ (as opposed to campaign or staff members). I have also added information on the party affiliation of the Senators from [here](https://ballotpedia.org/List_of_current_members_of_the_U.S._Congress).
+
+#### Followers
+
+The file `senators_follow.csv` contains an edge list of connections between each pair of senators who are connected through a follower relationship (this information was obtained using the function `rtweet::lookup_friendships`). The file is encoded such that the `source` is a follower of the `target`. You will need to use the subset of `following = TRUE` to identify the connections for which the `source` follows the `target`.
+
+#### Tweets by Senators
+
+To make your life a bit easier, I have also already downloaded all available tweets for these Twitter accounts using the following code. You **do not need to repeat this step**. Simply rely on the file `senator_tweets.RDS` in the exercise folder.
+
+```{r, eval=FALSE}
+library(tidyverse)
+library(lubridate)
+
+# Read in the Senator Data
+senate <- read_csv("senators_twitter.csv")
+
+# Get Tweets
+senator_tweets <- get_timelines(user = senate$`Official Twitter`,
+    n = 3200, ## number of tweets to download (max is 3,200)
+    )
+
+saveRDS(senator_tweets, "senator_tweets.RDS")
+```
+
+```{r, eval=FALSE}
+# Read in the Tweets
+senator_tweets <- readRDS("senator_tweets.RDS")
+
+# How limiting is the API limit?
+senator_tweets %>% 
+  group_by(screen_name) %>% 
+  summarize(n_tweet = n(),
+            oldest_tweet = min(created_at)) %>%
+  arrange(desc(oldest_tweet))
+```
+
+The data contains about 170k tweets and about 40 variables. Please note, that the API limit of 3,200 tweets per twitter handle actually cuts down the time period we can observe the most prolific Twitter users in the Senate down to only about one year into the past.
+
+## Tasks for the Assignment
+
+### 1. Who follows whom?
+
+#### a) Network of Followers
+
+Read in the edgelist of follower relationships from the file `senators_follow.csv`. Create a directed network graph. Identify the three senators who are followed by the most of their colleagues (i.e. the highest "in-degree") and the three senators who follow the most of their colleagues (i.e. the highest "out-degree"). [Hint: You can get this information simply from the data frame or use `igraph` to calculate the number of in and out connections: `indegree = igraph::degree(g, mode = "in")`.] Visualize the network of senators. In the visualization, highlight the party ID of the senator nodes with an appropriate color (blue = Democrat, red = Republican) and size the nodes by the centrality of the nodes to the network. Briefly comment.
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+twitter <- read.csv("/Users/vigyashrote/Desktop/DV/DV_NYU_course_material-master_last/Exercises/10_twitter_senate/senators_twitter.csv", stringsAsFactors = FALSE)
+
+senate_follow <- read.csv("/Users/vigyashrote/Desktop/DV/DV_NYU_course_material-master_last/Exercises/10_twitter_senate/senators_follow.csv", stringsAsFactors = FALSE)
+
+senate_follow_true<- filter(senate_follow,followed_by=="TRUE" )
+
+top_sen <- senate_follow_true %>% group_by(source)%>% dplyr::count("target")
+top_sen<- arrange(top_sen,desc(n))
+top_sen<- head(top_sen,100)
+
+senate_follow_true_merge<-  merge(senate_follow_true,top_sen , by="source")
+
+senate_follow_true_merge <- merge(senate_follow_true_merge, twitter, by.x="source", by.y="Official.Twitter")
+
+senate_follow_true_merge <- merge(senate_follow_true_merge, twitter, by.x="target", by.y="Official.Twitter")
+
+senate_follow_true_merge$source <- ifelse(senate_follow_true_merge$Party.affiliation.x == "Democratic Party", paste("D",senate_follow_true_merge$source, sep = "-"), paste("R",senate_follow_true_merge$source, sep = "-"))
+
+
+senate_follow_true_merge$target <- ifelse(senate_follow_true_merge$Party.affiliation.y == "Democratic Party", paste("D",senate_follow_true_merge$target, sep = "-"), paste("R",senate_follow_true_merge$target, sep = "-"))
+
+
+data_el1=data.frame(
+    source=c(senate_follow_true_merge$source),
+    target=c(senate_follow_true_merge$target)
+    )
+
+
+#data_el1 %>%
+#  kable("html") %>%
+#  kable_styling(bootstrap_options = c("striped", "hover"), full_width = T)
+
+# create the network object
+set.seed(100)
+#network1=graph_from_data_frame(d=data_el1, directed=F) 
+network2=graph_from_data_frame(d=data_el1, directed=T)
+
+walktrap_c <- cluster_walktrap(network2)  # find "communities"
+members <- membership(walktrap_c)
+
+senator_d3 <- igraph_to_networkD3(network2, group=members)
+
+senator_d3$nodes$size <- centralization.degree(network2)$res
+
+
+senator_d3$group <- ifelse(substr(senator_d3$group$name,1,1) == "D", 'Democrats','Republicans')
+
+
+ColourScale <- 'd3.scaleOrdinal()
+            .domain(["Democrats", "Republicans"])
+           .range(["blue", "maroon"]);'
+           
+           
+plot_1a <- forceNetwork(Links = senator_d3$links, Nodes = senator_d3$node,Source = 'source', Target = 'target',NodeID = 'name',Group = 'group',charge = -50, # node repulsion
+    Nodesize = 'size',linkDistance = 20,zoom = T,opacity = 1,fontSize=24,colourScale = JS(ColourScale))
+plot_1a %>% saveNetwork(file = 'senator_d3.html')
+
+plot_1a
+```
+#### b) Communities
+
+ 
+Clusters can be seen as solution 1A.
+SAME AS SOLUTION 1A.
+
+
+
+### 2. What are they tweeting about?
+
+From now on, rely on the information from the tweets stored in `senator_tweets.RDS`.
+
+
+#### a) Most Common Topics over Time
+
+Remove all tweets that are re-tweets (`is_retweet`) and identify which topics the senators tweet about. Rather than a full text analysis, just use the variable `hashtags` and identify the most common hashtags over time. Provide a visual summary.
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+rds_tweets<- readRDS("/Users/vigyashrote/Desktop/DV/DV_NYU_course_material-master_last/Exercises/10_twitter_senate/senator_tweets.RDS")
+
+senator_tweets_not_retweet<- filter(rds_tweets, is_retweet=="FALSE")
+rds_tweets1<- rds_tweets
+
+rds_tweets1$created_at <- substr(rds_tweets1$created_at, 1, 4)
+
+
+hash_counts <- unnest(rds_tweets1, hashtags) %>% dplyr::group_by(created_at) %>%
+  dplyr::count(hashtags, sort=TRUE)%>%
+  filter(!is.na(hashtags))
+  
+hash_counts_2 <- hash_counts %>%
+  group_by(created_at) %>%
+  top_n(n = 1) %>%
+  unnest() %>% 
+  arrange(desc(created_at))
+  
+plot_most_tweeted_topics<- ggplot(data= hash_counts_2, aes(x= hashtags, y= n))+geom_bar(position="dodge", stat="identity")+theme_economist()+theme(axis.text.x = element_text(angle=90, size=rel(0.8), hjust=1))+ggtitle("Most tweeted topics over time")+ylab("no of times") +xlab("most often used topics")
+
+#interactive
+ggplotly(plot_most_tweeted_topics)
+```
+#### b) Democrats vs. Republicans
+
+Some tweets are as old as 10 years but for some prolific users we observe a much shorter time span of Twitter activity. Feel free to subset the data to only include more recent tweets. Using the party ID variable (`Party affiliation`), identify how the choice of topics tweeted about (again using using hashtags) differs by party and visualize that information. 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+rds_tweets<- readRDS("/Users/vigyashrote/Desktop/DV/DV_NYU_course_material-master_last/Exercises/10_twitter_senate/senator_tweets.RDS")
+
+rds_tweets0<- rds_tweets
+rds_tweets0$created_at <- substr(rds_tweets0$created_at, 1, 4)
+
+senator_recent_tweets<- filter(rds_tweets0, created_at==2017)
+
+senator_recent_tweets<- senator_recent_tweets %>% filter(!is.na(hashtags))
+
+senator_party <- merge(senator_recent_tweets,twitter, by.x="screen_name", by.y="Official.Twitter")
+
+tryTolower = function(x)
+{
+  # create missing value
+  # this is where the returned value will be
+  y = NA
+  # tryCatch error
+  try_error = tryCatch(tolower(x), error = function(e) e)
+  # if not an error
+  if (!inherits(try_error, "error"))
+    y = tolower(x)
+  return(y)
+}
+
+replacePunctuation<- function(x){
+  gsub("[[:punct:]]+"," ",x)  
+}
+
+create_clean_corpus <- function(text_vector){
+  # Clean a text vector
+  text_corpus <- VCorpus(VectorSource(text_vector))
+  text_corpus_clean<-sapply(text_corpus, function(x) tryTolower(x))
+  text_corpus_clean <- VCorpus(VectorSource(text_corpus_clean))
+  text_corpus_clean <- tm_map(text_corpus_clean, content_transformer(tolower))
+  text_corpus_clean <- tm_map(text_corpus_clean, removeNumbers)
+  text_corpus_clean <- tm_map(text_corpus_clean, removeWords,c(stopwords()))
+  text_corpus_clean <- tm_map(text_corpus_clean, content_transformer(replacePunctuation))
+  text_corpus_clean <- tm_map(text_corpus_clean, stemDocument,language="english")
+  text_corpus_clean <- tm_map(text_corpus_clean, stripWhitespace)
+  return(text_corpus_clean)
+}
+
+Democrats <- paste(senator_party$hashtags[senator_party$Party.affiliation =="Democratic Party"], collapse = " ")
+
+Republicans <- paste(senator_party$hashtags[senator_party$Party.affiliation =="Republican Party"],collapse = " ")
+
+word_cloud_1 <- c(Democrats, Republicans)
+all_hashtags<- create_clean_corpus(word_cloud_1)
+all_hashtags_m <- TermDocumentMatrix(all_hashtags, control=list(weighting = weightTfIdf))
+colnames(all_hashtags_m) <- c("Democrats", "Republicans")
+all_hashtags_m <- as.matrix(all_hashtags_m)
+comparison.cloud(all_hashtags_m, colors = c("blue", "maroon"), max.words = 100)
+
+```
+#### c) Gun Control I - Dems vs. Reps
+
+The democratic party seems broadly more supportive of gun control legislation. Try to identify a set of 5-10 hashtags that signal support for gun control legislation (e.g. "`NeverAgain`", `#guncontrol`, `#guncontrolnow`, `#Enough`) and others that are expressing support for the right to own guns (e.g. `#2ndamendment`, `#NRA`, `#liberals`). The site [ritetag.com](https://ritetag.com/best-hashtags-for/gun%20control) can help with that task. Using the subset of senator tweets that included these hashtags, show whether and how senators from different parties talk differently about the issue of gun legislation.  
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+list_of_hashtags <- c("NeverAgain", "neveragain", "guncontrol", "guncontrolnow", "Enough", "2ndamendment", "NRA", "liberals")
+
+gun_control<- filter(rds_tweets, hashtags %in% list_of_hashtags)
+
+senator_party_1 <- merge(gun_control, twitter, by.x="screen_name", by.y="Official.Twitter")
+
+
+tryTolower = function(x)
+{
+  # create missing value
+  # this is where the returned value will be
+  y = NA
+  # tryCatch error
+  try_error = tryCatch(tolower(x), error = function(e) e)
+  # if not an error
+  if (!inherits(try_error, "error"))
+    y = tolower(x)
+  return(y)
+}
+
+replacePunctuation<- function(x){
+  gsub("[[:punct:]]+"," ",x)  
+}
+
+create_clean_corpus <- function(text_vector){
+  # Clean a text vector
+  text_corpus <- VCorpus(VectorSource(text_vector))
+  text_corpus_clean<-sapply(text_corpus, function(x) tryTolower(x))
+  text_corpus_clean <- VCorpus(VectorSource(text_corpus_clean))
+  text_corpus_clean <- tm_map(text_corpus_clean, removeWords,c(stopwords()))
+  text_corpus_clean <- tm_map(text_corpus_clean, content_transformer(replacePunctuation))
+  text_corpus_clean <- tm_map(text_corpus_clean, stemDocument,language="english")
+  text_corpus_clean <- tm_map(text_corpus_clean, stripWhitespace)
+  return(text_corpus_clean)
+}
+
+
+word_cloud_2 <- c(Democrats, Republicans)
+all_hashtags<- create_clean_corpus(word_cloud_2)
+all_hashtags_m <- TermDocumentMatrix(all_hashtags, control=list(weighting = weightTfIdf))
+colnames(all_hashtags_m) <- c("Democrats", "Republicans")
+all_hashtags_m <- as.matrix(all_hashtags_m)
+comparison.cloud(all_hashtags_m, colors = c("blue", "maroon"), max.words = 100)
+```
+#### d) Gun Control II - Parkland Shooting
+
+On February 14, 2018, a mass shooting occurred at Marjory Stoneman Douglas High School in Parkland, Florida. Provide some visualization of how senators responded to the event in their Twitter communication. 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+rds_tweets<- readRDS("/Users/vigyashrote/Desktop/DV/DV_NYU_course_material-master_last/Exercises/10_twitter_senate/senator_tweets.RDS")
+
+senator_tweets_11 <- filter(rds_tweets, is_retweet=='FALSE')
+
+
+
+senator_tweets_11$created_at <- substr(senator_tweets_11$created_at, 1, 10)
+
+senator_tweets_22 <- filter(senator_tweets_11, senator_tweets_11$created_at > '2018-02-13')
+
+senator_tweets_33 <- filter(senator_tweets_11, senator_tweets_11$created_at < '2018-02-17')
+
+senator_tweets_44 <- filter(senator_tweets_33, grepl('Florida', text))
+
+clean <- function(corpus){
+  corpus <- tm_map(corpus, removePunctuation)
+  corpus <- tm_map(corpus, content_transformer(tolower))
+  corpus <- tm_map(corpus, removeWords, c(stopwords("en")))
+  corpus <- tm_map(corpus, stripWhitespace)
+  return(corpus)
+}
+
+florida_corpus<- Corpus(VectorSource(senator_tweets_44$text))
+
+florida_tweets_clean <- clean(florida_corpus)
+
+florida_tweets_dtm <- DocumentTermMatrix(florida_tweets_clean, control = list(weighting = function(x) weightTfIdf(x, normalize = T)))
+
+florida_tweets_td<- tidy(florida_tweets_dtm)
+
+florida_tweets_tf_idf <-  florida_tweets_td %>%
+  bind_tf_idf(term, document, count) %>%  
+  arrange(desc(tf_idf)) 
+head(florida_tweets_tf_idf)
+
+#word cloud
+set.seed(150)
+par(bg="white")
+wordcloud(florida_tweets_tf_idf$term, florida_tweets_tf_idf$count, max.words = 100, colors = c("blue", "maroon"), scale =c(2,.7))
+text(x=0.5, y=0.95,"Response to Parkland Event ")
+
+```
+
+### 3. Are you talking to me?
+
+Often tweets are simply public statements without addressing a specific audience. However, it is possible to interact with a specific person by adding them as a friend, becoming their follower, re-tweeting their messages, and/or mentioning them in a tweet using the `@` symbol. 
+#### a) Identifying Re-Tweets
+
+Select the set of re-tweeted messages from other senators and identify the source of the originating message. Calculate by senator the amount of re-tweets they received and from which party these re-tweets came. Essentially, I would like to visualize whether senators largely re-tweet their own party colleagues' messages or whether there are some senators that get re-tweeted on both sides of the aisle. Visualize the result. 
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+tweets_re <- filter(rds_tweets, is_retweet == TRUE)
+
+re_1 <- unnest(tweets_re, mentions_screen_name) %>% group_by(screen_name)
+
+re_1_1 <- filter(re_1, mentions_screen_name %in% twitter$Official.Twitter)
+#re_2 <- data.frame(re_1_1$screen_name,re_1_1$mentions_screen_name)
+
+#re_2<- filter(re_2,screen_name != mentions_screen_name )
+
+re_2 <- sqldf("select screen_name,mentions_screen_name from re_1_1 where screen_name != mentions_screen_name")
+
+merge_re <- merge(x = re_2, y = twitter, by.x = "screen_name", by.y = "Official.Twitter")
+
+merge_re$Party_screen <- merge_re$Party.affiliation
+
+merge_re1 <- merge(x = merge_re, y = twitter, by.x = "mentions_screen_name", by.y = "Official.Twitter")
+
+merge_re1$Party_mentioned <- merge_re1$Party.affiliation.y
+
+c_re <- c("screen_name", "Party_screen", "mentions_screen_name", "Party_mentioned") 
+
+answer_3a <- merge_re1[c_re]
+
+answer_3a1 <- answer_3a %>% group_by(Party_screen) %>%
+  dplyr::count(Party_mentioned, sort=TRUE)
+
+plot_3a<- ggplot(data = answer_3a1 , aes(x = Party_screen, y = n, fill =Party_mentioned)) +
+  geom_bar(position="dodge", stat="identity",show.legend = TRUE) +
+  ylab("# of Retweets")+
+  xlab("Party Name")+
+ theme_economist()+
+  scale_fill_manual(values = c("blue", "green", "maroon" ))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),axis.text.x = element_text(angle=90, size=rel(1), hjust=1))+ ggtitle("Retweets by senators")
+
+plot_3a
+```
+
+#### b) Identifying Mentions
+
+Identify the tweets in which one senator mentions another senator directly (the variable is `mentions_screen_name`). For this example, please remove simple re-tweets (`is_retweet == FALSE`). Calculate who re-tweets whom among the senate members. Convert the information to an undirected graph object in which the number of mentions is the strength of the relationship between senators. Visualize the network graph using the party identification of the senators as a group variable (use blue for Democrats and red for Republicans) and some graph centrality measure to size the nodes. Comment on what you can see from the visualization.
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+rds_tweets<- readRDS("/Users/vigyashrote/Desktop/DV/DV_NYU_course_material-master_last/Exercises/10_twitter_senate/senator_tweets.RDS")
+
+
+senator_3b <- filter(rds_tweets, is_retweet=='FALSE')
+
+senator_3b <- filter(senator_3b, !is.na(mentions_screen_name))
+
+senator_3b_tweets <- cSplit(senator_3b, "mentions_screen_name", sep = ",", direction = "long")
+
+senator_3b_tweets$mentions_screen_name <- gsub("(", ",", senator_3b_tweets$mentions_screen_name, fixed=TRUE)
+
+senator_3b_tweets$mentions_screen_name <- gsub(")", ",", senator_3b_tweets$mentions_screen_name, fixed=TRUE)
+
+senator_3b_tweets$mentions_screen_name <- gsub("c,", "", senator_3b_tweets$mentions_screen_name, fixed=TRUE)
+
+senator_3b_tweets$mentions_screen_name <- gsub(",", "", senator_3b_tweets$mentions_screen_name, fixed=TRUE)
+
+senator_3b_tweets$mentions_screen_name <- gsub('"', "", senator_3b_tweets$mentions_screen_name, fixed=TRUE)
+
+senator_3b_merge <- merge(senator_3b_tweets, twitter, by.x="mentions_screen_name", by.y="Official.Twitter")
+
+tweets_3b <- senator_3b_merge %>%
+  filter(!(mentions_screen_name == screen_name)) %>%
+  group_by(screen_name, mentions_screen_name) %>%
+  dplyr::summarise(Total_number_of_mentions = n()) %>%
+  arrange(-Total_number_of_mentions)
+
+tweets_3b
+
+tweets_rel<- data.frame(source=c(tweets_3b$screen_name),target=c(tweets_3b$mentions_screen_name),
+weight=c(tweets_3b$Total_number_of_mentions))
+
+network_3b=graph_from_data_frame(d=tweets_rel, directed=F)
+
+plot_3b_lay = layout.fruchterman.reingold(network_3b)
+par(bg="gray15", mar=c(1,1,1,1))
+plot(network_3b, layout=plot_3b_lay,
+     vertex.color="gray25",
+     vertex.size=(degree(network_3b, mode = "in")), 
+     vertex.label.family="sans",
+     vertex.shape="circle",  #can also try "square", "rectangle", etc. More in igraph manual
+     vertex.label.color=hsv(h=0, s=0, v=.95, alpha=0.5),
+     vertex.label.cex=(degree(network_3b, mode = "in"))/300, #sized by in-degree centrality
+     edge.arrow.size=0.8,
+     edge.arrow.width=0.5,
+     edge.width=edge_attr(network_3b)$n/10, #sized by edge weight
+     edge.color=hsv(h=.95, s=1, v=.7, alpha=0.5))
+title("Retweet Network", cex.main=1, col.main="gray95")
+
+walktrap_c <- cluster_walktrap(network_3b)  # find "communities"
+members <- membership(walktrap_c)
+
+senator_d3 <- igraph_to_networkD3(network_3b, group=members)
+senator_d3$nodes$size <- centralization.degree(network_3b)$res
+#senator_d3$group <- ifelse(substr(senator_d3$group$name,1,1) == "D", 'Democrats','Republicans')
+
+ColourScale <- 'd3.scaleOrdinal()
+            .domain(["Democrats", "Republicans"])
+           .range(["maroon", "blue"]);'
+
+plot_3b_net <- forceNetwork(Links = senator_d3$links, Nodes = senator_d3$node,
+                  Source = 'source', Target = 'target', 
+                  NodeID = 'name', 
+                  Group = 'group', # color nodes by group calculated earlier
+                  charge = -50, # node repulsion
+                  Nodesize = 'size',
+                  linkDistance = 20,
+                  zoom = T, 
+                  opacity = 1,
+                  fontSize=24
+                  #colourScale = JS(ColourScale)
+                  )
+plot_3b_net %>% saveNetwork(file = 'senator_d3.html')
+
+plot_3b_net
+
+```
+#### c) BONUS ONLY: Who is popular on Twitter?
+
+Using the twitter handles, access the user information of the senators to identify the number of followers they have (obviously, this will require to actually connect to the Twitter server). Re-do the previous graph object but now use the number of followers (or some transformation of that info) to size the nodes. Comment how graph degree centrality (via mentions) and the number of followers are related. 
+
+## Submission
+
+Please follow the [instructions](/Exercises/homework_submission_instructions.md) to submit your homework. The homework is due on Thursday, April 12.
+
+## Please stay honest!
+
+If you do come across something online that provides part of the analysis / code etc., please no wholesale copying of other ideas. We are trying to evaluate your abilities to visualized data not the ability to do internet searches. Also, this is an individually assigned exercise -- please keep your solution to yourself.
